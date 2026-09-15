@@ -29,7 +29,6 @@ from dotenv import load_dotenv
 from flask import Flask, request, jsonify, session, send_file, render_template
 import psycopg2
 import psycopg2.extras   # for dictionary cursor (returns rows as dicts)
-import os
 from PIL import Image
 import pytesseract
 
@@ -138,7 +137,6 @@ def register():
         conn   = get_db()
         cursor = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
 
-        # Was: supabase.table("users").select("user_id").eq("email", email).execute()
         cursor.execute("SELECT user_id FROM users WHERE email = %s", (email,))
         if cursor.fetchone():
             return jsonify({"error": "Email already registered"}), 409
@@ -153,7 +151,6 @@ def register():
 
         # ── Insert into Neon ──────────────────────────────
         user_id = generate_id(8)
-        # Was: supabase.table("users").insert(new_user).execute()
         cursor.execute("""
             INSERT INTO users
               (user_id, username, name, email, contact, password_hash, created_at)
@@ -170,7 +167,6 @@ def register():
         cursor.close()
         conn.close()
 
-    # ── Create session (IDENTICAL) ────────────────────────
     session["user_id"]  = user_id
     session["username"] = username
     session["name"]     = name
@@ -191,14 +187,10 @@ def login():
     if not identifier or not password:
         return jsonify({"error": "Identifier and password are required"}), 400
 
-    # ── Search by username OR email OR contact ────────────
     matched = None
     try:
         conn   = get_db()
         cursor = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
-
-        # Was: loop through supabase for each field
-        # Now: single PostgreSQL OR query — same result, cleaner
         cursor.execute("""
             SELECT * FROM users
             WHERE username = %s OR email = %s OR contact = %s
@@ -215,11 +207,9 @@ def login():
     if not matched:
         return jsonify({"error": "No account found with that username, email, or contact"}), 404
 
-    # ── Verify password (IDENTICAL) ───────────────────────
     if matched["password_hash"] != hash_password(password):
         return jsonify({"error": "Incorrect password"}), 401
 
-    # ── Create session (IDENTICAL) ────────────────────────
     session["user_id"]  = matched["user_id"]
     session["username"] = matched["username"]
     session["name"]     = matched["name"]
@@ -249,7 +239,6 @@ def me():
     try:
         conn   = get_db()
         cursor = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
-        # Was: supabase.table("users").select("...").eq("user_id", ...).execute()
         cursor.execute("""
             SELECT user_id, username, name, email, contact, created_at
             FROM users WHERE user_id = %s
@@ -280,7 +269,6 @@ def get_expenses():
     try:
         conn   = get_db()
         cursor = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
-        # Was: supabase.table("expenses").select("*").eq("user_id",...).order("date",desc=True).execute()
         cursor.execute("""
             SELECT * FROM expenses
             WHERE user_id = %s
@@ -293,7 +281,6 @@ def get_expenses():
         cursor.close()
         conn.close()
 
-    # Convert to JSON-safe types
     result = []
     for r in rows:
         r = dict(r)
@@ -331,7 +318,6 @@ def add_expense():
     try:
         conn   = get_db()
         cursor = conn.cursor()
-        # Was: supabase.table("expenses").insert(expense).execute()
         cursor.execute("""
             INSERT INTO expenses
               (expense_id, user_id, amount, category, description, date, source)
@@ -367,6 +353,7 @@ def get_usernames():
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
+
 @app.route("/api/expenses/split", methods=["POST"])
 @login_required
 def add_split_expense():
@@ -374,7 +361,6 @@ def add_split_expense():
     Split an expense among multiple users.
     Requires a screenshot upload to proceed.
     """
-    # 1. Validate File Upload
     if 'screenshot' not in request.files:
         return jsonify({"error": "Screenshot proof is required for splitting expenses"}), 400
 
@@ -382,12 +368,11 @@ def add_split_expense():
     if file.filename == '':
         return jsonify({"error": "No file selected"}), 400
 
-    # 2. Validate Data
     try:
         amount = float(request.form.get("amount", 0))
         category = request.form.get("category", "Other")
         description = request.form.get("description", "Split Expense")
-        split_with = request.form.get("split_with", "").split(",") # comma separated usernames
+        split_with = request.form.get("split_with", "").split(",")
         split_with = [u.strip().lower() for u in split_with if u.strip()]
     except (ValueError, TypeError):
         return jsonify({"error": "Invalid amount provided"}), 400
@@ -403,7 +388,6 @@ def add_split_expense():
         conn = get_db()
         cursor = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
 
-        # 3. Verify all split-with users exist
         user_ids = []
         for uname in split_with:
             cursor.execute("SELECT user_id FROM users WHERE username = %s", (uname,))
@@ -412,18 +396,15 @@ def add_split_expense():
                 return jsonify({"error": f"User '{uname}' not found"}), 404
             user_ids.append(u['user_id'])
 
-        # 4. Save the main expense
         expense_id = generate_id(12)
         cursor.execute("""
             INSERT INTO expenses (expense_id, user_id, amount, category, description, date, source)
             VALUES (%s, %s, %s, %s, %s, NOW(), 'splitwise')
         """, (expense_id, payer_id, amount, category, description))
 
-        # 5. Calculate and Save Splits
-        num_people = len(user_ids) + 1 # payer + others
+        num_people = len(user_ids) + 1
         split_amount = round(amount / num_people, 2)
 
-        # Save screenshot to disk
         filename = f"split_{expense_id}_{file.filename}"
         filepath = os.path.join(app.config['UPLOAD_FOLDER'], filename)
         file.save(filepath)
@@ -455,7 +436,6 @@ def get_splits():
         conn = get_db()
         cursor = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
 
-        # Get debts where I am the payer (Who owes me)
         cursor.execute("""
             SELECT s.*, u.username as owed_by_name, e.description as expense_desc
             FROM splits s
@@ -465,7 +445,6 @@ def get_splits():
         """, (uid,))
         i_owe_them = cursor.fetchall()
 
-        # Get debts where I am the owed (Who I owe)
         cursor.execute("""
             SELECT s.*, u.username as payer_name, e.description as expense_desc
             FROM splits s
@@ -491,7 +470,6 @@ def delete_expense(expense_id):
     try:
         conn   = get_db()
         cursor = conn.cursor()
-        # Was: supabase.table("expenses").delete().eq("expense_id",...).eq("user_id",...).execute()
         cursor.execute("""
             DELETE FROM expenses
             WHERE expense_id = %s AND user_id = %s
@@ -513,7 +491,6 @@ def clear_all_expenses():
     try:
         conn   = get_db()
         cursor = conn.cursor()
-        # Was: supabase.table("expenses").delete().eq("user_id",...).execute()
         cursor.execute("DELETE FROM expenses WHERE user_id = %s", (get_current_user_id(),))
         conn.commit()
     except Exception as e:
@@ -546,7 +523,6 @@ def export_expenses():
         cursor.close()
         conn.close()
 
-    # ── Build CSV in memory (IDENTICAL) ──────────────────
     output = io.StringIO()
     writer = csv.writer(output)
     writer.writerow(["#", "Date", "Time", "Description", "Category", "Amount (₹)", "Source"])
@@ -592,7 +568,6 @@ def export_expenses():
 
 # ════════════════════════════════════════════════════════════
 #  ANALYTICS ROUTES
-#  Same as Supabase views — GROUP BY queries, identical JSON output
 # ════════════════════════════════════════════════════════════
 
 @app.route("/api/analytics/summary", methods=["GET"])
@@ -688,24 +663,23 @@ def perform_ocr():
         tesseract_path = os.getenv("TESSERACT_PATH")
         if tesseract_path:
             pytesseract.pytesseract.tesseract_cmd = tesseract_path
+        elif os.path.exists("/usr/bin/tesseract"):
+            pytesseract.pytesseract.tesseract_cmd = "/usr/bin/tesseract"
 
-        # Load image
-        img = Image.open(file.stream)
+        img = Image.open(file.stream).convert('L')
+        text = pytesseract.image_to_string(img)
 
-        # Strategy 1: Grayscale (Standard)
-        gray = img.convert('L')
-        text = pytesseract.image_to_string(gray)
-
-        # Strategy 2: Inverted (For Dark Mode screens)
         if len(text.strip()) < 10:
-            inverted = Image.eval(gray, lambda x: 255 - x)
-            text += "\n" + pytesseract.image_to_string(inverted)
+            inverted = Image.eval(img, lambda x: 255 - x)
+            inv_text = pytesseract.image_to_string(inverted)
+            if len(inv_text.strip()) > len(text.strip()):
+                text = inv_text
 
         return jsonify({"text": text})
     except Exception as e:
         error_msg = str(e)
         if "tesseract is not installed" in error_msg.lower() or "not found" in error_msg.lower():
-            return jsonify({"error": "❌ Tesseract NOT INSTALLED. Please install Tesseract OCR on your PC and add 'TESSERACT_PATH=C:\\Program Files\\Tesseract-OCR\\tesseract.exe' to your .env file."}), 500
+            return jsonify({"error": "OCR engine not found on server. Please check Docker/System installation."}), 500
         return jsonify({"error": f"OCR Error: {error_msg}"}), 500
 
 @app.route("/")
